@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>WebRTC Audio Sender</title>
+</head>
+
+<body style="background-color: #3b3731;">
+
+    <button id="streamButton">Hold to Stream Audio</button>
+    <button id="startButton">Start Streaming</button>
+    <button id="stopButton" disabled>Stop Streaming</button>
+
+    <div id="audio">
+        <audio id="localAudio" autoplay controls muted></audio>
+    </div>
+
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
+    <script>
+        const streamButton = document.getElementById('streamButton');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const localAudio = document.getElementById('localAudio');
+
+        const socket = io('http://10.100.26.3:3000'); // Replace with your signaling server address
+
+        let pc;
+        let localStream;
+        let isStreaming = false;
+        const iceCandidateBuffer = [];
+
+        streamButton.addEventListener('mousedown', () => {
+            if (!isStreaming) {
+                startStream();
+                isStreaming = true;
+            }
+        });
+
+        streamButton.addEventListener('mouseup', () => {
+            if (isStreaming) {
+                stopStream();
+                isStreaming = false;
+                localAudio.srcObject = null;
+            }
+        });
+
+        streamButton.addEventListener('touchstart', () => {
+            if (!isStreaming) {
+                startStream();
+                isStreaming = true;
+            }
+        });
+
+        streamButton.addEventListener('touchend', () => {
+            if (isStreaming) {
+                stopStream();
+                isStreaming = false;
+                localAudio.srcObject = null;
+            }
+        });
+
+        // Event listeners for the buttons
+        startButton.addEventListener('click', startStream);
+        stopButton.addEventListener('click', stopStream);
+
+        async function startStream() {
+            startButton.disabled = true;
+            stopButton.disabled = false;
+
+            try {
+                let stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+                // audioAnalyser(stream)
+
+                localStream = stream;
+                localAudio.srcObject = stream;
+
+                // console.log(stream);
+                
+                pc = createPeerConnection();
+
+                localStream.getAudioTracks().forEach(track => {
+                    pc.addTrack(track, localStream)
+                });
+
+                pc.createOffer()
+                    .then(offer => pc.setLocalDescription(offer))
+                    .then(() => {
+                        socket.emit('offer', pc.localDescription);
+                    })
+                    .catch(error => console.error('Error creating offer:', error));
+            } catch (error) {
+                console.error('Error accessing microphone:', error)
+            }
+        }
+
+        function stopStream() {
+            stopButton.disabled = true;
+            startButton.disabled = false;
+
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+        }
+
+        function createPeerConnection() {
+            const configuration = {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' }
+                ]
+            };
+
+            const pc = new RTCPeerConnection(configuration);
+
+            pc.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.emit('ice-candidate', event.candidate);
+                }
+            };
+
+            return pc;
+        }
+
+        // Handle incoming signaling data
+        socket.on('answer', async (answer) => {
+            if (pc) {
+                try {
+                    if (pc.signalingState === 'have-local-offer') {
+                        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+                    }
+                } catch (error) {
+                    console.error('Error setting remote description:', error.message);
+                }
+            }
+        });
+
+        socket.on('ice-candidate', async (candidate) => {
+            if (pc) {
+                try {
+                    if (pc.remoteDescription && pc.remoteDescription.type) {
+                        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                    }
+                } catch (error) {
+                    console.error('Error adding ICE candidate:', error.message);
+                }
+            }
+        });
+
+
+
+        function audioAnalyser(stream) {
+            // Create audio context
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+            // Create an audio analyser
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256; // Frequency bin count
+
+            // Create JavaScriptNode for processing
+            javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
+
+            // Connect the media stream to the analyser
+            microphone = audioContext.createMediaStreamSource(stream);
+            microphone.connect(analyser);
+            analyser.connect(javascriptNode);
+            javascriptNode.connect(audioContext.destination);
+
+            // Start visualizing
+            javascriptNode.onaudioprocess = () => {
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                analyser.getByteFrequencyData(dataArray);
+
+                // Calculate volume
+                const volume = dataArray.reduce((acc, val) => acc + val, 0) / dataArray.length;
+                console.log(`Volume: ${volume}`);
+            };
+        }
+
+    </script>
+
+</body>
+
+</html>

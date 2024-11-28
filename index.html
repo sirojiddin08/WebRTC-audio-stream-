@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Audio Sender & Receiver</title>
+</head>
+
+<body style="background-color: #3b3731; color: white; text-align: center; padding: 20px;">
+    <h1>WebRTC Audio Call</h1>
+    <button id="streamButton">Hold to Stream Audio</button>
+    <button id="startButton">Start Streaming</button>
+    <button id="stopButton" disabled>Stop Streaming</button>
+    <h3>Remote Audio:</h3>
+    <audio id="remoteAudio" autoplay controls></audio>
+
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
+    <script>
+        const streamButton = document.getElementById('streamButton');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const remoteAudio = document.getElementById('remoteAudio');
+
+        const socket = io('http://10.100.26.3:3000');
+
+
+        // const socket = io('https://10.100.9.146', {
+        //     secure: true,
+        //     transports: ['websocket', 'polling'] // Ensure WebSocket support
+        // });
+
+        // const socket = io('https://c80f-195-158-24-85.ngrok-free.app', {
+        //     secure: true,
+        //     transports: ['websocket', 'polling'] // Ensure WebSocket support
+        // });
+
+        const candidateQueue = [];
+        let pc;
+        let localStream;
+        let isStreaming = false;
+
+        const clientId = Math.random().toString(36).substring(7); // Generate a unique client ID for each instance        
+
+        // Start and Stop Buttons
+        startButton.addEventListener('click', () => {
+            // if (!isStreaming) {
+            //     startStream();
+            //     isStreaming = true;
+            // }
+            startStream();
+        });
+        stopButton.addEventListener('click', () => {
+            // if (isStreaming) {
+            //     stopStream();
+            //     isStreaming = false;
+            // }
+            stopStream();
+        });
+        pc = createPeerConnection();
+
+        // Start Streaming Audio
+        async function startStream() {
+            startButton.disabled = true;
+            stopButton.disabled = false;
+
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+                // Add tracks to the PeerConnection
+                localStream.getTracks().forEach(track => {
+                    pc.addTrack(track, localStream);
+                });
+
+
+                // Create and send an offer
+                const offerOptions = {
+                    offerToReceiveAudio: 1,
+                    iceRestart: true,
+                    voiceActivityDetection: true
+                };
+                const offer = await pc.createOffer(offerOptions);
+                await pc.setLocalDescription(offer);
+                socket.emit('offer', { offer: pc.localDescription, clientId });
+                // console.log('Offer sent:', pc.localDescription);
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+            }
+        }
+
+        // Stop Streaming Audio
+        function stopStream() {
+            stopButton.disabled = true;
+            startButton.disabled = false;
+
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+        }
+
+        // Create Peer Connection
+        function createPeerConnection() {
+            const configuration = {
+                sdpSemantics: "unified-plan",
+                iceServers: [
+                    { urls: "stun:stun.l.google.com:19302" },
+                ]
+            };
+            pcc = new RTCPeerConnection(configuration);
+
+            pcc.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.emit('ice-candidate', { candidate: event.candidate, clientId });
+                    // console.log('ICE candidate sent:', event.candidate);
+                }
+            };
+
+            return pcc;
+        }
+
+        // Handle incoming offer
+        socket.on('offer', async (data) => {
+            // Ignore offers from the same client
+            if (data.clientId === clientId) return;
+
+
+            console.log('connection');
+
+            // Ensure all tracks are added to the MediaStream
+            pc.ontrack = (event) => {
+                const stream = new MediaStream();
+                stream.addTrack(event.track);
+                remoteAudio.srcObject = stream;
+            };
+
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                socket.emit('answer', { answer: pc.localDescription, clientId });
+            } catch (err) {
+                console.error('Error handling offer:', err);
+            }
+        });
+
+        // Handle incoming answer
+        socket.on('answer', async (data) => {
+            if (data.clientId === clientId) return;
+
+            if (pc && pc.signalingState === 'have-local-offer') {
+                try {
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    // console.log('Remote description set for sender:', data.answer);
+                } catch (error) {
+                    console.error('Error setting remote description:', error.message);
+                }
+            }
+        });
+
+        // Handle incoming ICE candidates
+        socket.on('ice-candidate', (data) => {
+            if (data.clientId === clientId) return; // Ignore candidates from the same client
+
+            // console.log("Received ICE candidate:", data.candidate);
+            const rtcCandidate = new RTCIceCandidate(data.candidate);
+
+            // Add candidate to pc if it's in the correct state
+            if (pc && pc.signalingState === 'have-local-offer') {
+                pc.addIceCandidate(rtcCandidate)
+                    // .then(() => console.log('ICE candidate successfully added to pc'))
+                    .catch(err => console.error('Error adding ICE candidate to pc:', err.message));
+            }
+
+            // Add candidate to pc if it's in the correct state
+            if (pc && (pc.signalingState === 'have-remote-offer' || pc.signalingState === 'stable')) {
+                pc.addIceCandidate(rtcCandidate)
+                    // .then(() => console.log('ICE candidate successfully added to pc'))
+                    .catch(err => console.error('Error adding ICE candidate to pc:', err.message));
+            }
+        });
+
+
+    </script>
+</body>
+
+</html>
